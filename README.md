@@ -28,6 +28,18 @@ outputs/ 获得每首歌的两个 MP3
 5. 编辑 `config.json` 中的 `music_caption`，不要保留 `CHANGE_ME`。
 6. 双击 `run.bat`。
 
+### 单首 Smoke Test
+
+默认会处理 `input/` 的全部音乐。首次联调或调参可只处理一首，不修改 `config.json`：
+
+```powershell
+py -3 batch_remix.py --limit 1 --caption "Japanese electronic remix, energetic and rhythmic"
+# 或精确选择一首（必须位于 input/）
+py -3 batch_remix.py --file "input\song.mp3" --caption "Japanese electronic remix, energetic and rhythmic"
+```
+
+`--caption` 仅用于当前进程，适合正式 Caption 尚未确定时的技术链路测试。移除 `--limit`/`--file` 与 `--caption` 后，程序恢复使用 `config.json` 的正式 Caption 和全部输入。
+
 ## 固定实验设置
 
 `config.json` 将实验参数集中保存。当前工具强制 `generation_mode=remix`、`batch_size=2`、`audio_format=mp3` 与随机 seed；服务器返回的实际 `seed_value` 会写入 `manifest.json`。

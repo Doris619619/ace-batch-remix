@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 import hashlib
 import logging
@@ -11,7 +12,7 @@ import sys
 import time
 from typing import Any
 
-from .api import AceApiError, AceClient, TaskResult
+from .api import AceApiError, AceClient, AceSubmissionUncertain, TaskResult
 from .config import AppConfig, ConfigError, load_config
 from .manifest import ManifestStore
 
@@ -34,8 +35,18 @@ def safe_stem(stem: str) -> str:
 
 
 class BatchRemixRunner:
-    def __init__(self, root: Path) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        limit: int | None = None,
+        selected_file: str | None = None,
+        caption_override: str | None = None,
+    ) -> None:
         self.root = root
+        self.limit = limit
+        self.selected_file = selected_file
+        self.caption_override = caption_override
         self.config: AppConfig | None = None
         self.manifest = ManifestStore(root / "manifest.json")
         self.logger = logging.getLogger("ace_batch_remix")
@@ -59,10 +70,26 @@ class BatchRemixRunner:
     def _discover_sources(self) -> list[Path]:
         directory = self.root / "input"
         directory.mkdir(exist_ok=True)
-        return sorted(
+        sources = sorted(
             (path for path in directory.iterdir() if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS),
             key=lambda path: path.name.casefold(),
         )
+        if self.selected_file:
+            candidate = Path(self.selected_file)
+            if not candidate.is_absolute():
+                candidate = self.root / candidate
+            candidate = candidate.resolve()
+            input_root = directory.resolve()
+            if input_root not in candidate.parents or not candidate.is_file():
+                raise ConfigError("--file must name an existing audio file under input/.")
+            if candidate.suffix.lower() not in SUPPORTED_EXTENSIONS:
+                raise ConfigError("--file must be .mp3, .wav, or .flac")
+            return [candidate]
+        if self.limit is not None:
+            if self.limit <= 0:
+                raise ConfigError("--limit must be a positive integer")
+            return sources[: self.limit]
+        return sources
 
     def _output_paths(self, source: Path, fingerprint: str, used_dirs: dict[str, str]) -> tuple[Path, list[Path]]:
         base = safe_stem(source.stem)
@@ -88,6 +115,11 @@ class BatchRemixRunner:
         source = Path(record["source_path"])
         try:
             task_id = self.client.submit_remix(source)
+        except AceSubmissionUncertain as exc:
+            self.manifest.update(record, status="submission_uncertain", error=str(exc))
+            self.logger.error("%s: %s", source.name, exc)
+            self._line(f"Submission needs manual confirmation for {source.name}; it was not automatically retried.")
+            return
         except AceApiError as exc:
             self.manifest.update(record, retry_count=int(record.get("retry_count", 0)) + 1)
             self._mark_error(record, f"Submission failed: {exc}")
@@ -178,13 +210,25 @@ class BatchRemixRunner:
 
     def _run(self) -> int:
         try:
-            self.config = load_config(self.root / "config.json")
+            self.config = load_config(
+                self.root / "config.json",
+                allow_placeholder_caption=self.caption_override is not None,
+            )
+            if self.caption_override is not None:
+                caption = self.caption_override.strip()
+                if not caption or caption == "CHANGE_ME":
+                    raise ConfigError("--caption must be a non-placeholder caption")
+                self.config = replace(self.config, music_caption=caption)
             self.manifest.load()
         except (ConfigError, RuntimeError) as exc:
             self._line(f"Configuration/state error: {exc}")
             return 2
         (self.root / "outputs").mkdir(exist_ok=True)
-        sources = self._discover_sources()
+        try:
+            sources = self._discover_sources()
+        except ConfigError as exc:
+            self._line(f"Input selection error: {exc}")
+            return 2
         if not sources:
             self._line("No supported audio found in input/. Add .mp3, .wav, or .flac files and run again.")
             return 0
@@ -200,6 +244,8 @@ class BatchRemixRunner:
             return 2
         self._line(f"Server: ONLINE\nInput songs: {len(sources)}\nVariants/song: {self.config.batch_size}\nExpected outputs: {len(sources) * self.config.batch_size}\n")
         self._line(f"Remix Strength: {self.config.remix_strength}\nCover Strength: {self.config.cover_strength}\nFormat: MP3\n")
+        if self.caption_override is not None:
+            self._line("Caption: TEMPORARY CLI override (config.json was not changed)\n")
         used_dirs: dict[str, str] = {}
         records: list[dict[str, Any]] = []
         for source in sources:
@@ -217,7 +263,7 @@ class BatchRemixRunner:
 
         while True:
             for record in records:
-                if self._outputs_exist(record) or record.get("status") == "failed":
+                if self._outputs_exist(record) or record.get("status") in {"failed", "submission_uncertain"}:
                     continue
                 if not record.get("task_id"):
                     self._submit(record)
@@ -227,7 +273,7 @@ class BatchRemixRunner:
                 self._process_query(active)
                 self.manifest.save()
             self._progress(records)
-            if all(self._outputs_exist(record) or record.get("status") == "failed" for record in records):
+            if all(self._outputs_exist(record) or record.get("status") in {"failed", "submission_uncertain"} for record in records):
                 break
             time.sleep(self.config.poll_interval_seconds)
         self.manifest.save()

@@ -33,7 +33,7 @@ def _require(mapping: dict[str, Any], key: str) -> Any:
     return mapping[key]
 
 
-def load_config(path: Path) -> AppConfig:
+def load_config(path: Path, *, allow_placeholder_caption: bool = False) -> AppConfig:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
@@ -59,7 +59,7 @@ def load_config(path: Path) -> AppConfig:
     )
     if not config.server_url.startswith(("http://", "https://")):
         raise ConfigError("server_url must start with http:// or https://")
-    if not config.music_caption or config.music_caption == "CHANGE_ME":
+    if not config.music_caption or (config.music_caption == "CHANGE_ME" and not allow_placeholder_caption):
         raise ConfigError("Set music_caption in config.json before running.")
     if config.generation_mode != "remix":
         raise ConfigError("generation_mode must be 'remix'.")

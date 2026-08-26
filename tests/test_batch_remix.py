@@ -3,11 +3,13 @@ from __future__ import annotations
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+import requests
 import tempfile
 from threading import Thread
+from unittest.mock import patch
 import unittest
 
-from src.api import build_remix_payload
+from src.api import AceClient, AceSubmissionUncertain, build_remix_payload
 from src.config import AppConfig
 from src.runner import BatchRemixRunner, safe_stem, sha256_file
 
@@ -242,6 +244,31 @@ class BatchRemixTests(unittest.TestCase):
         second, _ = runner._output_paths(Path("歌.wav"), "b" * 64, used)
         self.assertEqual(first.name, "歌")
         self.assertEqual(second.name, "歌_bbbbbbbb")
+
+    def test_limit_and_selected_file_choose_only_requested_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_dir = root / "input"
+            input_dir.mkdir()
+            first = input_dir / "a.mp3"
+            second = input_dir / "b.mp3"
+            first.write_bytes(b"a")
+            second.write_bytes(b"b")
+            self.assertEqual(BatchRemixRunner(root, limit=1)._discover_sources(), [first])
+            self.assertEqual(BatchRemixRunner(root, selected_file="input/b.mp3")._discover_sources(), [second])
+            with self.assertRaisesRegex(Exception, "under input"):
+                BatchRemixRunner(root, selected_file="outside.mp3")._discover_sources()
+
+    def test_submit_read_timeout_is_uncertain_and_not_a_retryable_api_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "song.mp3"
+            source.write_bytes(b"source")
+            config = AppConfig("http://127.0.0.1:8001", "caption", "remix", 1.0, 0.2, 2, "mp3", True, 5, 3, 60)
+            client = AceClient(config)
+            with patch.object(client.session, "post", side_effect=requests.ReadTimeout()):
+                with self.assertRaises(AceSubmissionUncertain):
+                    client.submit_remix(source)
 
 
 if __name__ == "__main__":

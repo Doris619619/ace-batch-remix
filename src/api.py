@@ -17,6 +17,10 @@ class AceApiError(RuntimeError):
     """A request reached ACE-Step but could not be used safely."""
 
 
+class AceSubmissionUncertain(AceApiError):
+    """The submit request timed out after it may already have reached ACE-Step."""
+
+
 @dataclass(frozen=True)
 class TaskResult:
     task_id: str
@@ -97,6 +101,11 @@ class AceClient:
                     timeout=self.config.request_timeout_seconds,
                 )
             data = self._unwrap(response)
+        except requests.ReadTimeout as exc:
+            raise AceSubmissionUncertain(
+                "Submission timed out before a task_id was returned. The server may still have accepted it; "
+                "the client will not automatically resubmit this source."
+            ) from exc
         except (OSError, requests.RequestException) as exc:
             raise AceApiError(str(exc)) from exc
         if not isinstance(data, dict) or not data.get("task_id"):
