@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 import hashlib
+import json
 import logging
 from pathlib import Path
 import re
@@ -32,6 +33,20 @@ def sha256_file(path: Path) -> str:
 def safe_stem(stem: str) -> str:
     cleaned = ILLEGAL_WINDOWS_NAME.sub("_", stem).strip(". ")
     return cleaned or "untitled"
+
+
+def remix_run_fingerprint(config: AppConfig) -> str:
+    """Identify outputs generated with the same source-independent Remix settings."""
+    payload = {
+        "music_caption": config.music_caption,
+        "generation_mode": config.generation_mode,
+        "remix_strength": config.remix_strength,
+        "cover_strength": config.cover_strength,
+        "batch_size": config.batch_size,
+        "audio_format": config.audio_format,
+        "use_random_seed": config.use_random_seed,
+    }
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 class BatchRemixRunner:
@@ -91,19 +106,27 @@ class BatchRemixRunner:
             return sources[: self.limit]
         return sources
 
-    def _output_paths(self, source: Path, fingerprint: str, used_dirs: dict[str, str]) -> tuple[Path, list[Path]]:
+    def _output_paths(
+        self,
+        source: Path,
+        source_fingerprint: str,
+        run_fingerprint: str,
+        used_dirs: dict[str, str],
+    ) -> tuple[Path, list[Path]]:
+        """Allocate non-overwriting output names for one source and one settings run."""
         base = safe_stem(source.stem)
         chosen = base
-        if chosen in used_dirs and used_dirs[chosen] != fingerprint:
-            chosen = f"{base}_{fingerprint[:8]}"
-        used_dirs[chosen] = fingerprint
-        folder = self.root / "outputs" / chosen
-        return folder, [folder / f"{chosen}_01.mp3", folder / f"{chosen}_02.mp3"]
+        if chosen in used_dirs and used_dirs[chosen] != source_fingerprint:
+            chosen = f"{base}_{source_fingerprint[:8]}"
+        used_dirs[chosen] = source_fingerprint
+        run_name = f"{chosen}__{run_fingerprint[:8]}"
+        folder = self.root / "outputs" / run_name
+        return folder, [folder / f"{run_name}_{index:02d}.mp3" for index in range(1, self.config.batch_size + 1)]
 
-    @staticmethod
-    def _outputs_exist(record: dict[str, Any]) -> bool:
+    def _outputs_exist(self, record: dict[str, Any]) -> bool:
+        """Return true only when this run's configured number of non-empty outputs exist."""
         paths = [Path(item) for item in record.get("output_paths", [])]
-        return len(paths) == 2 and all(path.is_file() and path.stat().st_size > 0 for path in paths)
+        return len(paths) == self.config.batch_size and all(path.is_file() and path.stat().st_size > 0 for path in paths)
 
     def _mark_error(self, record: dict[str, Any], message: str, terminal: bool = False) -> None:
         retries = int(record.get("retry_count", 0))
@@ -247,6 +270,7 @@ class BatchRemixRunner:
         if self.caption_override is not None:
             self._line("Caption: TEMPORARY CLI override (config.json was not changed)\n")
         used_dirs: dict[str, str] = {}
+        run_fingerprint = remix_run_fingerprint(self.config)
         records: list[dict[str, Any]] = []
         for source in sources:
             try:
@@ -254,8 +278,15 @@ class BatchRemixRunner:
             except OSError as exc:
                 self._line(f"Cannot read {source.name}: {exc}")
                 continue
-            folder, paths = self._output_paths(source, fingerprint, used_dirs)
-            record = self.manifest.record(fingerprint, source, folder, paths)
+            folder, paths = self._output_paths(source, fingerprint, run_fingerprint, used_dirs)
+            record = self.manifest.record(
+                f"{fingerprint}:{run_fingerprint}",
+                fingerprint,
+                source,
+                folder,
+                paths,
+                run_fingerprint,
+            )
             if self._outputs_exist(record):
                 self.manifest.update(record, status="completed", error=None)
             records.append(record)

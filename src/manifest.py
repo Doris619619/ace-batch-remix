@@ -40,13 +40,23 @@ class ManifestStore:
         )
         temporary.replace(self.path)
 
-    def record(self, fingerprint: str, source_path: Path, output_dir: Path, output_paths: list[Path]) -> dict[str, Any]:
+    def record(
+        self,
+        run_source_fingerprint: str,
+        source_fingerprint: str,
+        source_path: Path,
+        output_dir: Path,
+        output_paths: list[Path],
+        run_fingerprint: str,
+    ) -> dict[str, Any]:
+        """Create or retrieve one source record scoped to immutable generation settings."""
         songs: dict[str, dict[str, Any]] = self.data["songs"]
-        if fingerprint not in songs:
-            songs[fingerprint] = {
+        if run_source_fingerprint not in songs:
+            songs[run_source_fingerprint] = {
                 "source_filename": source_path.name,
                 "source_path": str(source_path.resolve()),
-                "source_fingerprint_sha256": fingerprint,
+                "source_fingerprint_sha256": source_fingerprint,
+                "run_fingerprint": run_fingerprint,
                 "output_dir": str(output_dir.resolve()),
                 "output_paths": [str(item.resolve()) for item in output_paths],
                 "task_id": None,
@@ -57,7 +67,7 @@ class ManifestStore:
                 "error": None,
                 "updated_at": now_iso(),
             }
-        return songs[fingerprint]
+        return songs[run_source_fingerprint]
 
     @staticmethod
     def update(record: dict[str, Any], **fields: Any) -> None:

@@ -1,6 +1,8 @@
+<!-- 文件用途：说明 ACE Batch Remix 的安装、配置、批处理运行与输出恢复方式。 -->
+
 # ACE Batch Remix
 
-一个独立的 Windows 批处理客户端：把 `input/` 中的音乐通过已建立的本机 HTTP 隧道提交给远端 ACE-Step 1.5，并为每首歌下载两个 Remix MP3。
+一个独立的 Windows 批处理客户端：把 `input/` 中的音乐通过已建立的本机 HTTP 隧道提交给远端 ACE-Step 1.5，并为每首歌下载配置数量的 Remix MP3。
 
 > ACE-Step 仓库与本仓库完全独立。本项目不会启动、修改、fork 或复制 ACE-Step 模型源码，也不负责 SSH 或 Tailscale。
 
@@ -16,7 +18,7 @@ input/ 放入音乐，修改 config.json 的 music_caption
             ↓
 双击 run.bat
             ↓
-outputs/ 获得每首歌的两个 MP3
+outputs/ 获得每首歌配置数量的 MP3
 ```
 
 ## 首次使用
@@ -42,7 +44,7 @@ py -3 batch_remix.py --file "input\song.mp3" --caption "Japanese electronic remi
 
 ## 固定实验设置
 
-`config.json` 将实验参数集中保存。当前工具强制 `generation_mode=remix`、`batch_size=2`、`audio_format=mp3` 与随机 seed；服务器返回的实际 `seed_value` 会写入 `manifest.json`。
+`config.json` 将实验参数集中保存。当前正式实验使用 `generation_mode=remix`、`batch_size=4`、`audio_format=mp3` 与随机 seed；工具接受 `1` 至 `8` 个版本，前提是远端 ACE-Step 的 GPU 配置支持该批量大小。服务器返回的实际 `seed_value` 会写入 `manifest.json`。
 
 当前 ACE-Step REST 映射仅在 [`src/api.py`](src/api.py) 的 `build_remix_payload()`：
 
@@ -52,15 +54,16 @@ py -3 batch_remix.py --file "input\song.mp3" --caption "Japanese electronic remi
 | Music Caption | `prompt` |
 | Remix Strength | `audio_cover_strength` |
 | Cover Strength | `cover_noise_strength` |
-| 2 个版本 | `batch_size=2` |
+| 每首 1–8 个版本（当前为 4） | `batch_size` |
 | MP3 | `audio_format=mp3` |
 
 映射基于 ACE-Step 的[官方 API 文档](https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/API.md)和[推理参数源码](https://github.com/ace-step/ACE-Step-1.5/blob/main/acestep/inference.py)。升级远端 ACE-Step 后，如需调整字段，只修改该函数并先做一首歌的人工验证。
 
 ## 恢复与输出
 
-- `manifest.json` 以源文件 SHA-256 记录 task ID、状态、重试、输出路径、服务器 seed 与错误；它被 Git 忽略，保留在本机即可断点续跑。
-- 已成功写入两个非空 MP3 的歌曲会跳过，不会重新生成。
+- `manifest.json` 以源文件 SHA-256 和生成设置指纹记录 task ID、状态、重试、输出路径、服务器 seed 与错误；它被 Git 忽略，保留在本机即可断点续跑。
+- 已成功写入当前 `batch_size` 个非空 MP3 的歌曲会跳过，不会重新生成；不同 Caption 或批量大小会进入独立输出目录，避免覆盖历史实验。
+- 输出目录会以 `歌曲名__设置指纹` 命名；同一设置可断点续跑，不同设置的实验结果可在本机并存。
 - 旧 task ID 从服务器结果中消失时，会在 `max_retries` 范围内重新提交该歌曲，不会影响已完成歌曲。
 - 下载写入 `.part` 临时文件，只有非空完整下载后才原子重命名为最终 MP3。
 - 输出名称支持中文和日文；清理 Windows 非法字符。不同源文件同名时，目录会追加短 SHA-256，避免覆盖。

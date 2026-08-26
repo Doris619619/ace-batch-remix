@@ -1,10 +1,10 @@
 {
   "server_url": "http://127.0.0.1:8001",
-  "music_caption": "CHANGE_ME",
+  "music_caption": "将原曲制作成空灵、轻盈、具有空间感的日本电子音乐 Remix。最重要的要求：保留原曲原有的主旋律、人声旋律、速度、节奏骨架、和弦进行和段落结构，不要重新设计歌曲结构，不要改变原曲整体律动。明显减少原曲中厚重、密集、具有攻击性的鼓点和低频。弱化重 Kick、强 Snare、密集打击乐、失真噪音和过度厚重的 Bass，让节奏更加轻盈、克制和通透。不要完全移除节奏，而是保留非常柔和、简洁的 Pulse 和轻微电子打击乐，使歌曲仍然有稳定的前进感，但不会产生强烈的冲击和压迫感。使用柔和的电子 Kick、轻盈的 Percussion、细腻的 Hi-hat、温暖但克制的 Sub Bass。Bass 不要占据大量空间，只作为轻微的低频支撑。加入大量空气感和空间感元素，例如宽阔的 Reverb、Delay、Ambient Pad、柔和 Synth Texture、Shimmer、Atmospheric Layer 和细腻的高频电子纹理。让人声和主旋律成为歌曲最突出的部分。人声可以具有更宽的空间感和轻微梦幻感，但仍然保持清晰、自然和有情绪。在段落转折和高潮位置，不要通过猛烈鼓点制造爆发，而是通过 Synth Layer 增加、和声扩展、空间打开、Reverb Tail、轻微 Bass Expansion 和音色层次增加来提升情绪。整体感觉：空灵、漂浮、透明、梦幻、宽广、克制、现代，带有夜晚、天空、城市灯光和漂浮感。风格融合：Japanese Electronic、Dream Pop、Ambient Pop、Chill Electronic、Future Garage、Ethereal J-Pop。避免：Heavy Kick、Aggressive Bass、Hard Drop、Dense Drums、Distorted Percussion、Harsh Noise、过度压缩、过度饱和、密集鼓组和强烈夜店感。优先级：原曲旋律与人声 > 原曲节奏骨架 > 空间感 > 氛围与音色 > 轻微节奏推动 > 低频冲击。核心原则：保留原曲的旋律和节奏，但让鼓点变轻、空间变大、声音变得空灵而有漂浮感。",
   "generation_mode": "remix",
   "remix_strength": 1.0,
   "cover_strength": 0.2,
-  "batch_size": 2,
+  "batch_size": 4,
   "audio_format": "mp3",
   "use_random_seed": true,
   "poll_interval_seconds": 5,

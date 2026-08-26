@@ -34,6 +34,7 @@ def _require(mapping: dict[str, Any], key: str) -> Any:
 
 
 def load_config(path: Path, *, allow_placeholder_caption: bool = False) -> AppConfig:
+    """Load a valid user configuration, allowing batch sizes supported by ACE-Step."""
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
@@ -66,8 +67,8 @@ def load_config(path: Path, *, allow_placeholder_caption: bool = False) -> AppCo
     for name, value in (("remix_strength", config.remix_strength), ("cover_strength", config.cover_strength)):
         if not 0 <= value <= 1:
             raise ConfigError(f"{name} must be between 0.0 and 1.0")
-    if config.batch_size != 2:
-        raise ConfigError("batch_size must be exactly 2 for this experiment")
+    if not 1 <= config.batch_size <= 8:
+        raise ConfigError("batch_size must be between 1 and 8 for the configured ACE-Step server")
     if config.audio_format != "mp3":
         raise ConfigError("audio_format must be 'mp3' for this experiment")
     if not config.use_random_seed:

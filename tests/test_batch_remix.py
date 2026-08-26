@@ -1,3 +1,5 @@
+"""Mock-API regression tests for ACE Batch Remix request, recovery and output behavior."""
+
 from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -10,8 +12,8 @@ from unittest.mock import patch
 import unittest
 
 from src.api import AceClient, AceSubmissionUncertain, build_remix_payload
-from src.config import AppConfig
-from src.runner import BatchRemixRunner, safe_stem, sha256_file
+from src.config import AppConfig, load_config
+from src.runner import BatchRemixRunner, remix_run_fingerprint, safe_stem, sha256_file
 
 
 class MockAceServer:
@@ -91,6 +93,8 @@ class MockAceServer:
                                     [
                                         {"file": "/v1/audio?path=one.mp3", "seed_value": "101"},
                                         {"file": "/v1/audio?path=two.mp3", "seed_value": "202"},
+                                        {"file": "/v1/audio?path=three.mp3", "seed_value": "303"},
+                                        {"file": "/v1/audio?path=four.mp3", "seed_value": "404"},
                                     ]
                                 ),
                             }
@@ -119,7 +123,7 @@ class MockAceServer:
         self.thread.join()
 
 
-def write_config(root: Path, server_url: str, max_retries: int = 3) -> None:
+def write_config(root: Path, server_url: str, max_retries: int = 3, batch_size: int = 2) -> None:
     root.joinpath("config.json").write_text(
         json.dumps(
             {
@@ -128,7 +132,7 @@ def write_config(root: Path, server_url: str, max_retries: int = 3) -> None:
                 "generation_mode": "remix",
                 "remix_strength": 1.0,
                 "cover_strength": 0.2,
-                "batch_size": 2,
+                "batch_size": batch_size,
                 "audio_format": "mp3",
                 "use_random_seed": True,
                 "poll_interval_seconds": 0.001,
@@ -185,8 +189,13 @@ class BatchRemixTests(unittest.TestCase):
             write_config(root, server.url)
             runner = BatchRemixRunner(root)
             fingerprint = sha256_file(source)
-            runner.manifest.record(fingerprint, source, root / "outputs" / "song", [root / "outputs" / "song" / "song_01.mp3", root / "outputs" / "song" / "song_02.mp3"])
-            record = runner.manifest.data["songs"][fingerprint]
+            config = load_config(root / "config.json")
+            runner.config = config
+            run_fingerprint = remix_run_fingerprint(config)
+            folder, paths = runner._output_paths(source, fingerprint, run_fingerprint, {})
+            identity = f"{fingerprint}:{run_fingerprint}"
+            runner.manifest.record(identity, fingerprint, source, folder, paths, run_fingerprint)
+            record = runner.manifest.data["songs"][identity]
             record.update({"task_id": "legacy-task", "status": "running"})
             runner.manifest.save()
             self.assertEqual(BatchRemixRunner(root).run(), 0)
@@ -239,11 +248,27 @@ class BatchRemixTests(unittest.TestCase):
     def test_safe_stem_and_output_dir_collision_are_windows_safe(self) -> None:
         self.assertEqual(safe_stem('a<b>:c*?'), "a_b__c__")
         runner = BatchRemixRunner(Path("C:/temporary-root"))
+        runner.config = AppConfig("http://127.0.0.1:8001", "caption", "remix", 1.0, 0.2, 4, "mp3", True, 5, 3, 60)
         used: dict[str, str] = {}
-        first, _ = runner._output_paths(Path("歌.mp3"), "a" * 64, used)
-        second, _ = runner._output_paths(Path("歌.wav"), "b" * 64, used)
-        self.assertEqual(first.name, "歌")
-        self.assertEqual(second.name, "歌_bbbbbbbb")
+        first, first_paths = runner._output_paths(Path("歌.mp3"), "a" * 64, "c" * 64, used)
+        second, second_paths = runner._output_paths(Path("歌.wav"), "b" * 64, "c" * 64, used)
+        self.assertEqual(first.name, "歌__cccccccc")
+        self.assertEqual(second.name, "歌_bbbbbbbb__cccccccc")
+        self.assertEqual(len(first_paths), 4)
+        self.assertEqual(len(second_paths), 4)
+
+    def test_batch_size_four_creates_four_outputs_in_a_settings_scoped_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp, MockAceServer() as server:
+            root = Path(temp)
+            root.joinpath("input").mkdir()
+            root.joinpath("input", "song.mp3").write_bytes(b"source")
+            write_config(root, server.url, batch_size=4)
+            self.assertEqual(BatchRemixRunner(root).run(), 0)
+            manifest = json.loads(root.joinpath("manifest.json").read_text(encoding="utf-8"))
+            record = next(iter(manifest["songs"].values()))
+            self.assertEqual(len(record["output_paths"]), 4)
+            self.assertTrue(all(Path(item).is_file() for item in record["output_paths"]))
+            self.assertTrue(Path(record["output_dir"]).name.startswith("song__"))
 
     def test_limit_and_selected_file_choose_only_requested_input(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
