@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+input/*
+!input/.gitkeep
+outputs/*
+!outputs/.gitkeep
+logs/*
+!logs/.gitkeep
+manifest.json
+manifest.json.tmp
+*.part

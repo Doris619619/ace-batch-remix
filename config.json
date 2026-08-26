@@ -1,0 +1,13 @@
+{
+  "server_url": "http://127.0.0.1:8001",
+  "music_caption": "CHANGE_ME",
+  "generation_mode": "remix",
+  "remix_strength": 1.0,
+  "cover_strength": 0.2,
+  "batch_size": 2,
+  "audio_format": "mp3",
+  "use_random_seed": true,
+  "poll_interval_seconds": 5,
+  "max_retries": 3,
+  "request_timeout_seconds": 60
+}
