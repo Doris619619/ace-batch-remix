@@ -11,8 +11,9 @@ from threading import Thread
 from unittest.mock import patch
 import unittest
 
-from src.api import AceClient, AceSubmissionUncertain, build_remix_payload
-from src.config import AppConfig, load_config
+from src.api import AceClient, AceSubmissionUncertain, build_remix_payload, build_text2music_payload
+from src.config import AppConfig, Text2MusicConfig, load_config
+from src.manifest import ManifestStore
 from src.runner import BatchRemixRunner, remix_run_fingerprint, safe_stem, sha256_file
 
 
@@ -24,6 +25,8 @@ class MockAceServer:
         lose_first_task: bool = False,
         fail_download_attempts: int = 0,
         fail_all_tasks: bool = False,
+        short_first_text_result: bool = False,
+        lose_first_text_task: bool = False,
     ) -> None:
         self.state = {
             "submitted": [],
@@ -33,6 +36,12 @@ class MockAceServer:
             "lose_first_task": lose_first_task,
             "fail_download_attempts": fail_download_attempts,
             "fail_all_tasks": fail_all_tasks,
+            "short_first_text_result": short_first_text_result,
+            "lose_first_text_task": lose_first_text_task,
+            "lost_text_task": False,
+            "shortened": False,
+            "submitted_json": [],
+            "task_batches": {},
         }
         state = self.state
 
@@ -73,7 +82,12 @@ class MockAceServer:
                 body = self.rfile.read(length)
                 if self.path == "/release_task":
                     task_id = f"task-{len(state['submitted']) + 1}"
-                    state["submitted"].append(body.decode("utf-8", errors="replace"))
+                    decoded = body.decode("utf-8", errors="replace")
+                    state["submitted"].append(decoded)
+                    if self.headers.get("Content-Type", "").startswith("application/json"):
+                        payload = json.loads(decoded)
+                        state["submitted_json"].append(payload)
+                        state["task_batches"][task_id] = int(payload["batch_size"])
                     self._json({"task_id": task_id, "status": "queued"})
                 elif self.path == "/query_result":
                     requested = json.loads(body.decode())["task_id_list"]
@@ -82,19 +96,24 @@ class MockAceServer:
                     for task_id in requested:
                         if state["lose_first_task"] and task_id == "legacy-task":
                             continue
+                        if state["lose_first_text_task"] and task_id == "task-1" and not state["lost_text_task"]:
+                            state["lost_text_task"] = True
+                            continue
                         if state["fail_all_tasks"]:
                             response.append({"task_id": task_id, "status": 2, "error": "mock inference failure"})
                             continue
+                        batch_size = state["task_batches"].get(task_id, 4)
+                        if state["short_first_text_result"] and task_id == "task-1" and not state["shortened"]:
+                            batch_size -= 1
+                            state["shortened"] = True
                         response.append(
                             {
                                 "task_id": task_id,
                                 "status": 1,
                                 "result": json.dumps(
                                     [
-                                        {"file": "/v1/audio?path=one.mp3", "seed_value": "101"},
-                                        {"file": "/v1/audio?path=two.mp3", "seed_value": "202"},
-                                        {"file": "/v1/audio?path=three.mp3", "seed_value": "303"},
-                                        {"file": "/v1/audio?path=four.mp3", "seed_value": "404"},
+                                        {"file": f"/v1/audio?path={task_id}-{index}.audio", "seed_value": str(101 * index)}
+                                        for index in range(1, batch_size + 1)
                                     ]
                                 ),
                             }
@@ -123,7 +142,13 @@ class MockAceServer:
         self.thread.join()
 
 
-def write_config(root: Path, server_url: str, max_retries: int = 3, batch_size: int = 2) -> None:
+def write_config(
+    root: Path,
+    server_url: str,
+    max_retries: int = 3,
+    batch_size: int = 2,
+    text2music: dict[str, object] | None = None,
+) -> None:
     root.joinpath("config.json").write_text(
         json.dumps(
             {
@@ -138,6 +163,7 @@ def write_config(root: Path, server_url: str, max_retries: int = 3, batch_size: 
                 "poll_interval_seconds": 0.001,
                 "max_retries": max_retries,
                 "request_timeout_seconds": 5,
+                **({"text2music": text2music} if text2music is not None else {}),
             }
         ),
         encoding="utf-8",
@@ -145,6 +171,17 @@ def write_config(root: Path, server_url: str, max_retries: int = 3, batch_size: 
 
 
 class BatchRemixTests(unittest.TestCase):
+    def test_v1_manifest_loads_without_changing_legacy_songs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp, "manifest.json")
+            legacy_songs = {"legacy": {"source_filename": "song.mp3", "status": "running"}}
+            path.write_text(json.dumps({"version": 1, "songs": legacy_songs}), encoding="utf-8")
+            store = ManifestStore(path)
+            store.load()
+            self.assertEqual(store.data["version"], 2)
+            self.assertEqual(store.data["songs"], legacy_songs)
+            self.assertEqual(store.data["text2music_runs"], {})
+
     def test_payload_keeps_all_remix_mapping_in_one_place(self) -> None:
         config = AppConfig("http://127.0.0.1:8001", "target style", "remix", 1.0, 0.2, 2, "mp3", True, 5, 3, 60)
         self.assertEqual(
@@ -160,6 +197,126 @@ class BatchRemixTests(unittest.TestCase):
                 "use_random_seed": "true",
             },
         )
+
+    def test_text2music_payload_is_json_only_and_instrumental(self) -> None:
+        config = Text2MusicConfig("warm lo-fi beats", 180, True, True, 8, "flac", 4, False, 42)
+        self.assertEqual(
+            build_text2music_payload(config, 3, 44),
+            {
+                "task_type": "text2music",
+                "prompt": "warm lo-fi beats",
+                "lyrics": "[Instrumental]",
+                "instrumental": True,
+                "audio_duration": 180,
+                "thinking": True,
+                "inference_steps": 8,
+                "audio_format": "flac",
+                "batch_size": 3,
+                "use_random_seed": False,
+                "seed": 44,
+            },
+        )
+
+    def test_text2music_batches_twenty_flac_and_resumes_before_extending(self) -> None:
+        text_config = {
+            "music_caption": "lo-fi instrumental, warm vinyl crackle",
+            "audio_duration": 120,
+            "instrumental": True,
+            "thinking": True,
+            "inference_steps": 8,
+            "audio_format": "flac",
+            "batch_size": 4,
+            "use_random_seed": True,
+            "seed": -1,
+        }
+        with tempfile.TemporaryDirectory() as temp, MockAceServer() as server:
+            root = Path(temp)
+            write_config(root, server.url, text2music=text_config)
+            self.assertFalse(root.joinpath("input").exists())
+            self.assertEqual(BatchRemixRunner(root, mode="text2music", count=20).run(), 0)
+            self.assertFalse(root.joinpath("input").exists())
+            self.assertEqual([item["batch_size"] for item in server.state["submitted_json"]], [4, 4, 4, 4, 4])
+            manifest = json.loads(root.joinpath("manifest.json").read_text(encoding="utf-8"))
+            run = next(iter(manifest["text2music_runs"].values()))
+            self.assertEqual(len(run["tracks"]), 20)
+            self.assertTrue(all(Path(track["output_path"]).suffix == ".flac" and Path(track["output_path"]).is_file() for track in run["tracks"].values()))
+            self.assertEqual(BatchRemixRunner(root, mode="text2music", count=20).run(), 0)
+            self.assertEqual(len(server.state["submitted_json"]), 5)
+            self.assertEqual(BatchRemixRunner(root, mode="text2music", count=22).run(), 0)
+            self.assertEqual([item["batch_size"] for item in server.state["submitted_json"]], [4, 4, 4, 4, 4, 2])
+
+    def test_text2music_wav_and_fixed_seeds_are_derived_from_first_track(self) -> None:
+        text_config = {
+            "music_caption": "quiet lo-fi piano",
+            "audio_duration": 60,
+            "instrumental": True,
+            "thinking": False,
+            "inference_steps": 8,
+            "audio_format": "wav",
+            "batch_size": 4,
+            "use_random_seed": False,
+            "seed": 100,
+        }
+        with tempfile.TemporaryDirectory() as temp, MockAceServer() as server:
+            root = Path(temp)
+            write_config(root, server.url, text2music=text_config)
+            self.assertEqual(BatchRemixRunner(root, mode="text2music", count=9).run(), 0)
+            self.assertEqual([item["seed"] for item in server.state["submitted_json"]], [100, 104, 108])
+            self.assertEqual([item["batch_size"] for item in server.state["submitted_json"]], [4, 4, 1])
+            manifest = json.loads(root.joinpath("manifest.json").read_text(encoding="utf-8"))
+            run = next(iter(manifest["text2music_runs"].values()))
+            self.assertTrue(all(Path(track["output_path"]).suffix == ".wav" for track in run["tracks"].values()))
+
+    def test_text2music_batch_size_one_uses_one_task_for_each_track(self) -> None:
+        text_config = {
+            "music_caption": "single-task lo-fi", "audio_duration": 60, "instrumental": True,
+            "thinking": False, "inference_steps": 8, "audio_format": "flac",
+            "batch_size": 1, "use_random_seed": True, "seed": -1,
+        }
+        with tempfile.TemporaryDirectory() as temp, MockAceServer() as server:
+            root = Path(temp)
+            write_config(root, server.url, text2music=text_config)
+            self.assertEqual(BatchRemixRunner(root, mode="text2music", count=4).run(), 0)
+            self.assertEqual([item["batch_size"] for item in server.state["submitted_json"]], [1, 1, 1, 1])
+
+    def test_text2music_replaces_only_missing_track_after_partial_server_result(self) -> None:
+        text_config = {
+            "music_caption": "lo-fi drum loop", "audio_duration": 60, "instrumental": True,
+            "thinking": False, "inference_steps": 8, "audio_format": "flac",
+            "batch_size": 2, "use_random_seed": False, "seed": 7,
+        }
+        with tempfile.TemporaryDirectory() as temp, MockAceServer(short_first_text_result=True) as server:
+            root = Path(temp)
+            write_config(root, server.url, text2music=text_config)
+            self.assertEqual(BatchRemixRunner(root, mode="text2music", count=2).run(), 0)
+            # The first response completed track 1. The replacement is a one-track
+            # request, proving the successful local song was not regenerated.
+            self.assertEqual([item["batch_size"] for item in server.state["submitted_json"]], [2, 1])
+            self.assertEqual([item["seed"] for item in server.state["submitted_json"]], [7, 8])
+
+    def test_text2music_lost_task_resubmits_only_unfinished_tracks(self) -> None:
+        text_config = {
+            "music_caption": "lo-fi drum loop", "audio_duration": 60, "instrumental": True,
+            "thinking": False, "inference_steps": 8, "audio_format": "flac",
+            "batch_size": 2, "use_random_seed": False, "seed": 7,
+        }
+        with tempfile.TemporaryDirectory() as temp, MockAceServer(lose_first_text_task=True) as server:
+            root = Path(temp)
+            write_config(root, server.url, text2music=text_config)
+            self.assertEqual(BatchRemixRunner(root, mode="text2music", count=2).run(), 0)
+            self.assertEqual([item["batch_size"] for item in server.state["submitted_json"]], [2, 2])
+            self.assertEqual([item["seed"] for item in server.state["submitted_json"]], [7, 7])
+
+    def test_text2music_rejects_invalid_count_without_creating_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temp, MockAceServer() as server:
+            root = Path(temp)
+            write_config(root, server.url, text2music={
+                "music_caption": "lo-fi", "audio_duration": 60, "instrumental": True,
+                "thinking": False, "inference_steps": 8, "audio_format": "flac",
+                "batch_size": 4, "use_random_seed": True, "seed": -1,
+            })
+            self.assertEqual(BatchRemixRunner(root, mode="text2music", count=0).run(), 2)
+            self.assertFalse(root.joinpath("input").exists())
 
     def test_submit_query_download_unicode_and_seed_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temp, MockAceServer() as server:
