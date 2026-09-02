@@ -9,5 +9,16 @@
   "use_random_seed": true,
   "poll_interval_seconds": 5,
   "max_retries": 3,
-  "request_timeout_seconds": 60
+  "request_timeout_seconds": 60,
+  "text2music": {
+    "music_caption": "Lo-fi instrumental hip-hop, warm Rhodes chords, soft vinyl crackle, dusty drums, mellow bass, late-night study mood, no vocals",
+    "audio_duration": 180,
+    "instrumental": true,
+    "thinking": true,
+    "inference_steps": 8,
+    "audio_format": "flac",
+    "batch_size": 1,
+    "use_random_seed": true,
+    "seed": -1
+  }
 }

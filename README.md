@@ -2,7 +2,7 @@
 
 # ACE Batch Remix
 
-> 面向 [ACE-Step 1.5](https://github.com/ace-step/ACE-Step-1.5) 的可靠 Windows 批量 Remix 客户端：把本地音频文件夹提交到远端 GPU 服务，为每首歌生成多份 MP3，并在本机安全、可追溯地归档结果。
+> 面向 [ACE-Step 1.5](https://github.com/ace-step/ACE-Step-1.5) 的可靠 Windows 批量客户端：既可为本地音频生成 Remix，也可无参考音频地批量 text2music，并在本机安全、可追溯地归档结果。
 
 ACE Batch Remix 不训练模型，也不修改 ACE-Step 源码。它解决的是批量实验中最容易出错的那层工作：**提交、轮询、断点恢复、下载和结果管理**。适用于已经能通过 SSH Tunnel、Tailscale 或其他方式访问 ACE-Step HTTP API 的个人工作站。
 
@@ -28,16 +28,16 @@ flowchart LR
     B -->|multipart src_audio + cover payload| C
     B -->|批量 /query_result 轮询| C
     C -->|file URL| B
-    B --> E[本机 outputs/\n原曲 + Remix MP3]
+    B --> E[本机 outputs/\nRemix 与 Text2Music 音频]
     B --> F[manifest.json / logs/\n本地恢复与诊断]
 ```
 
 1. 客户端先检查 `GET /health`，避免在隧道或远端服务未就绪时提交任务。
 2. 每首输入音频以 multipart `src_audio` 上传，并用 ACE-Step 的 `cover` 语义提交 Remix 请求。
 3. 全部待办歌曲先快速进入远端队列；随后客户端用单次 `/query_result` 批量查询所有未完成 task ID。
-4. 成功结果中的每个 `file` URL 会被流式下载到本机，完成后才写入最终 MP3 文件。
+4. 成功结果中的每个 `file` URL 会被流式下载到本机，完成后才写入所配置格式的最终音频文件。
 
-**推理与临时生成文件位于远端 ACE-Step 机器；最终 MP3、manifest 和日志位于运行本仓库的本机。**
+**推理与临时生成文件位于远端 ACE-Step 机器；最终音频、manifest 和日志位于运行本仓库的本机。**
 
 ## 技术栈
 
@@ -77,6 +77,28 @@ py -3 batch_remix.py --limit 1
 py -3 batch_remix.py
 ```
 
+### 批量生成 Lo-fi 纯音乐
+
+`text2music` 不读取 `input/`，也不会上传 `src_audio` 或 reference audio。默认 `config.json` 已提供 FLAC Lo-fi 纯音乐示例；按需修改 `text2music` 配置段后运行：
+
+```powershell
+# 默认每首单独提交；20 首会拆为 20 个远端任务
+py -3 batch_remix.py --mode text2music --count 20
+```
+
+为多条 prompt 分组生成时，传入稳定英文标签即可让目录和文件名保留来源，例如：
+
+```powershell
+py -3 batch_remix.py --mode text2music --count 4 --label rainy_window_study --caption "Dreamy rainy-night lo-fi instrumental ..."
+# outputs/text2music/rainy_window_study__<设置指纹>/rainy_window_study_0001.flac
+```
+
+text2music 可配置 `music_caption`、`audio_duration`（10–600 秒）、`instrumental`、`thinking`、`inference_steps`、`audio_format`、`batch_size`、`use_random_seed` 与 `seed`。默认 `batch_size=1`，即同一个 prompt 的每首歌是独立 API 任务；只有明确提高它时才会在同一任务内生成多个候选。格式支持 `flac`、`wav`、`wav32`、`mp3`、`opus`、`aac`；建议优先 FLAC/WAV。
+
+同一套 text2music 生成设置会形成一个可恢复集合：再次执行相同 `--count` 会跳过已成功文件；将 `--count 20` 增大为 `--count 30` 时仅生成 21–30 号。已完成任务下载失败时只重试下载；远端任务丢失或结果不完整时只重新提交缺失曲目。提交超时会保持 `submission_uncertain`，不会自动盲目重投。
+
+当 `use_random_seed=false` 时，首目标序号为 `n` 的 API 子任务使用 `seed + n - 1`，避免不同子任务重复同一固定种子批次。
+
 也可以直接双击 [`run.bat`](run.bat)。它只负责调用本机 Python；依赖缺失时会给出安装提示，不会擅自安装依赖、启动远端服务或创建隧道。
 
 如果系统没有 Python Launcher（`py`），将上面命令中的 `py -3` 替换为已安装 Python 的 `python` 即可。
@@ -103,7 +125,7 @@ py -3 batch_remix.py --file "input\song.mp3" --caption "Japanese electronic remi
 | `remix_strength` | 原始音频对 Remix 的影响强度 | 数值 |
 | `cover_strength` | Cover 噪声强度 | 数值 |
 | `batch_size` | 每首歌的目标版本数 | 1–8；受远端 GPU 能力限制 |
-| `audio_format` | 下载格式 | 当前为 `mp3` |
+| `audio_format` | Remix 下载格式 | `flac`、`wav`、`wav32`、`mp3`、`opus`、`aac`；当前 Remix 配置为 `mp3` |
 | `poll_interval_seconds` | 远端任务轮询间隔 | 秒 |
 | `max_retries` | 失效任务的最大重提次数 | 正整数 |
 
@@ -117,7 +139,7 @@ ACE-Step 请求字段只在 [`src/api.py`](src/api.py) 的 `build_remix_payload(
 | Remix Strength | `audio_cover_strength` |
 | Cover Strength | `cover_noise_strength` |
 | 多版本生成 | `batch_size` |
-| MP3 输出 | `audio_format=mp3` |
+| 输出格式 | `audio_format` |
 
 映射依据 [ACE-Step API 文档](https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/API.md) 与 [ACE-Step 推理参数源码](https://github.com/ace-step/ACE-Step-1.5/blob/main/acestep/inference.py)。升级远端 ACE-Step 后，请先审查这个函数并执行单曲人工验证；API 可用不等于声学效果已经满足制作要求。
 
@@ -144,6 +166,8 @@ outputs/
 
 [`manifest.json`](manifest.json) 记录源路径与 SHA-256、任务 ID、提交时间、状态、重试次数、服务端返回的 `seed_value`、输出路径和最终错误。它仅是本机运行状态，不应提交 Git。`logs/` 保存完整 HTTP/解析错误上下文，而终端只显示简洁进度与最终摘要。
 
+text2music 使用 manifest v2 的 `text2music_runs` 命名空间，按设置指纹保存 run、远端 task 和稳定编号 track 三层状态；旧版 `songs` 中的 Remix 记录保持原样可恢复。text2music 输出形如 `outputs/text2music/<设置指纹>/track_0001.flac`。
+
 ## 可靠性边界
 
 | 情况 | 客户端行为 |
@@ -153,7 +177,7 @@ outputs/
 | 服务端丢失旧 task ID | 在 `max_retries` 范围内重新提交该歌曲，其余歌曲继续运行 |
 | 上传读取超时 | 标为“提交结果不确定”，不会自动盲重投，避免远端已受理时生成重复任务 |
 | 单个任务或下载失败 | 记录错误并继续其余歌曲，结束时以非零状态报告缺失版本 |
-| 下载中断 | 保留或清理临时 `.part`，不把不完整文件伪装成最终 MP3 |
+| 下载中断 | 保留或清理临时 `.part`，不把不完整文件伪装成最终音频 |
 
 ## 项目结构
 

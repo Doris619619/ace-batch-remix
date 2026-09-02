@@ -18,7 +18,7 @@ class ManifestStore:
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self.data: dict[str, Any] = {"version": 1, "songs": {}}
+        self.data: dict[str, Any] = {"version": 2, "songs": {}, "text2music_runs": {}}
 
     def load(self) -> None:
         if not self.path.exists():
@@ -29,6 +29,12 @@ class ManifestStore:
             raise RuntimeError(f"Cannot read manifest.json: {exc}") from exc
         if not isinstance(loaded, dict) or not isinstance(loaded.get("songs"), dict):
             raise RuntimeError("manifest.json has an unsupported format")
+        # Version 1 stores only Remix records. Keep it intact and add the new
+        # namespace lazily so an interrupted legacy Remix run remains usable.
+        if not isinstance(loaded.get("text2music_runs", {}), dict):
+            raise RuntimeError("manifest.json has an unsupported text2music_runs format")
+        loaded.setdefault("text2music_runs", {})
+        loaded["version"] = max(int(loaded.get("version", 1)), 2)
         self.data = loaded
 
     def save(self) -> None:
@@ -68,6 +74,27 @@ class ManifestStore:
                 "updated_at": now_iso(),
             }
         return songs[run_source_fingerprint]
+
+    def text2music_run(
+        self,
+        run_fingerprint: str,
+        request: dict[str, Any],
+        output_dir: Path,
+    ) -> dict[str, Any]:
+        """Create or retrieve durable state for one settings-scoped text run."""
+        runs: dict[str, dict[str, Any]] = self.data["text2music_runs"]
+        if run_fingerprint not in runs:
+            runs[run_fingerprint] = {
+                "run_fingerprint": run_fingerprint,
+                "request": request,
+                "output_dir": str(output_dir.resolve()),
+                "tracks": {},
+                "tasks": {},
+                "next_task_number": 1,
+                "created_at": now_iso(),
+                "updated_at": now_iso(),
+            }
+        return runs[run_fingerprint]
 
     @staticmethod
     def update(record: dict[str, Any], **fields: Any) -> None:

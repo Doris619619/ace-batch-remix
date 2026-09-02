@@ -12,6 +12,24 @@ class ConfigError(ValueError):
     """Raised when config.json is missing or invalid."""
 
 
+SUPPORTED_AUDIO_FORMATS = {"flac", "mp3", "opus", "aac", "wav", "wav32"}
+
+
+@dataclass(frozen=True)
+class Text2MusicConfig:
+    """Settings used only by the no-reference text-to-music workflow."""
+
+    music_caption: str
+    audio_duration: float
+    instrumental: bool
+    thinking: bool
+    inference_steps: int
+    audio_format: str
+    batch_size: int
+    use_random_seed: bool
+    seed: int
+
+
 @dataclass(frozen=True)
 class AppConfig:
     server_url: str
@@ -25,12 +43,52 @@ class AppConfig:
     poll_interval_seconds: float
     max_retries: int
     request_timeout_seconds: float
+    text2music: Text2MusicConfig | None = None
 
 
 def _require(mapping: dict[str, Any], key: str) -> Any:
+    """Return a required JSON field or identify the missing configuration key."""
     if key not in mapping:
         raise ConfigError(f"config.json is missing required field: {key}")
     return mapping[key]
+
+
+def _load_text2music(raw: dict[str, Any]) -> Text2MusicConfig | None:
+    """Validate the optional text2music section without changing Remix defaults."""
+    section = raw.get("text2music")
+    if section is None:
+        return None
+    if not isinstance(section, dict):
+        raise ConfigError("text2music must contain a JSON object")
+    try:
+        config = Text2MusicConfig(
+            music_caption=str(_require(section, "music_caption")).strip(),
+            audio_duration=float(_require(section, "audio_duration")),
+            instrumental=bool(_require(section, "instrumental")),
+            thinking=bool(_require(section, "thinking")),
+            inference_steps=int(_require(section, "inference_steps")),
+            audio_format=str(_require(section, "audio_format")).lower(),
+            batch_size=int(_require(section, "batch_size")),
+            use_random_seed=bool(_require(section, "use_random_seed")),
+            seed=int(section.get("seed", -1)),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"text2music has an invalid value: {exc}") from exc
+    if not config.music_caption or config.music_caption == "CHANGE_ME":
+        raise ConfigError("Set text2music.music_caption in config.json before running.")
+    if not 10 <= config.audio_duration <= 600:
+        raise ConfigError("text2music.audio_duration must be between 10 and 600 seconds")
+    if not 1 <= config.inference_steps:
+        raise ConfigError("text2music.inference_steps must be >= 1")
+    if not 1 <= config.batch_size <= 8:
+        raise ConfigError("text2music.batch_size must be between 1 and 8")
+    if config.audio_format not in SUPPORTED_AUDIO_FORMATS:
+        raise ConfigError(f"text2music.audio_format must be one of: {', '.join(sorted(SUPPORTED_AUDIO_FORMATS))}")
+    if config.use_random_seed and config.seed != -1:
+        raise ConfigError("text2music.seed must be -1 when text2music.use_random_seed is true")
+    if not config.use_random_seed and config.seed < 0:
+        raise ConfigError("text2music.seed must be a non-negative integer when random seed is disabled")
+    return config
 
 
 def load_config(path: Path, *, allow_placeholder_caption: bool = False) -> AppConfig:
@@ -57,6 +115,7 @@ def load_config(path: Path, *, allow_placeholder_caption: bool = False) -> AppCo
         poll_interval_seconds=float(_require(raw, "poll_interval_seconds")),
         max_retries=int(_require(raw, "max_retries")),
         request_timeout_seconds=float(raw.get("request_timeout_seconds", 60)),
+        text2music=_load_text2music(raw),
     )
     if not config.server_url.startswith(("http://", "https://")):
         raise ConfigError("server_url must start with http:// or https://")
@@ -69,8 +128,8 @@ def load_config(path: Path, *, allow_placeholder_caption: bool = False) -> AppCo
             raise ConfigError(f"{name} must be between 0.0 and 1.0")
     if not 1 <= config.batch_size <= 8:
         raise ConfigError("batch_size must be between 1 and 8 for the configured ACE-Step server")
-    if config.audio_format != "mp3":
-        raise ConfigError("audio_format must be 'mp3' for this experiment")
+    if config.audio_format not in SUPPORTED_AUDIO_FORMATS:
+        raise ConfigError(f"audio_format must be one of: {', '.join(sorted(SUPPORTED_AUDIO_FORMATS))}")
     if not config.use_random_seed:
         raise ConfigError("use_random_seed must be true; actual server seeds are recorded in manifest.json")
     if config.poll_interval_seconds <= 0 or config.max_retries < 0 or config.request_timeout_seconds <= 0:

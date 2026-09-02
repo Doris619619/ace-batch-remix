@@ -10,7 +10,7 @@ from urllib.parse import urljoin
 
 import requests
 
-from .config import AppConfig
+from .config import AppConfig, Text2MusicConfig
 
 
 class AceApiError(RuntimeError):
@@ -44,6 +44,28 @@ def build_remix_payload(config: AppConfig) -> dict[str, str]:
         "batch_size": str(config.batch_size),
         "audio_format": config.audio_format,
         "use_random_seed": "true",
+    }
+
+
+def build_text2music_payload(config: Text2MusicConfig, batch_size: int, seed: int) -> dict[str, object]:
+    """Build the JSON-only ACE-Step text-to-music request.
+
+    ``[Instrumental]`` is ACE-Step's control token for an instrumental result;
+    it is deliberately sent alongside the explicit boolean so both current and
+    older server revisions receive an unambiguous no-vocals instruction.
+    """
+    return {
+        "task_type": "text2music",
+        "prompt": config.music_caption,
+        "lyrics": "[Instrumental]" if config.instrumental else "",
+        "instrumental": config.instrumental,
+        "audio_duration": config.audio_duration,
+        "thinking": config.thinking,
+        "inference_steps": config.inference_steps,
+        "audio_format": config.audio_format,
+        "batch_size": batch_size,
+        "use_random_seed": config.use_random_seed,
+        "seed": seed,
     }
 
 
@@ -112,6 +134,26 @@ class AceClient:
             raise AceApiError("ACE-Step response did not include a task_id")
         return str(data["task_id"])
 
+    def submit_text2music(self, config: Text2MusicConfig, batch_size: int, seed: int) -> str:
+        """Submit a text-only task exactly once; unknown outcomes stay manual."""
+        try:
+            response = self.session.post(
+                self._url("/release_task"),
+                json=build_text2music_payload(config, batch_size, seed),
+                timeout=self.config.request_timeout_seconds,
+            )
+            data = self._unwrap(response)
+        except requests.ReadTimeout as exc:
+            raise AceSubmissionUncertain(
+                "Submission timed out before a task_id was returned. The server may still have accepted it; "
+                "the client will not automatically resubmit this text2music batch."
+            ) from exc
+        except requests.RequestException as exc:
+            raise AceApiError(str(exc)) from exc
+        if not isinstance(data, dict) or not data.get("task_id"):
+            raise AceApiError("ACE-Step response did not include a task_id")
+        return str(data["task_id"])
+
     def query(self, task_ids: list[str]) -> dict[str, TaskResult]:
         if not task_ids:
             return {}
@@ -151,8 +193,8 @@ class AceClient:
     def download(self, relative_or_absolute_url: str, destination: Path) -> None:
         url = urljoin(self.base_url, relative_or_absolute_url)
         temporary = destination.with_name(destination.name + ".part")
-        temporary.unlink(missing_ok=True)
         try:
+            temporary.unlink(missing_ok=True)
             with self._request_with_backoff("GET", url, stream=True, timeout=self.config.request_timeout_seconds) as response:
                 if not response.ok:
                     raise AceApiError(f"Audio download failed with HTTP {response.status_code}: {response.text[:300]}")
@@ -169,5 +211,10 @@ class AceClient:
         except (OSError, requests.RequestException) as exc:
             raise AceApiError(str(exc)) from exc
         finally:
-            if temporary.exists():
-                temporary.unlink(missing_ok=True)
+            try:
+                if temporary.exists():
+                    temporary.unlink(missing_ok=True)
+            except OSError:
+                # A concurrent recovery process may still own the transient
+                # file. The next manifest-driven retry will handle it safely.
+                pass
