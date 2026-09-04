@@ -2,7 +2,7 @@
 
 # ACE Batch Remix
 
-> 面向 [ACE-Step 1.5](https://github.com/ace-step/ACE-Step-1.5) 的可靠 Windows 批量客户端：既可为本地音频生成 Remix，也可无参考音频地批量 text2music，并在本机安全、可追溯地归档结果。
+> 面向 [ACE-Step 1.5](https://github.com/ace-step/ACE-Step-1.5) 的可靠 Windows 批量客户端：既可为本地音频生成 Remix，也可无参考音频地批量 text2music，还能将本地歌单顺序合成为一首 WAV 或 FLAC。
 
 ACE Batch Remix 不训练模型，也不修改 ACE-Step 源码。它解决的是批量实验中最容易出错的那层工作：**提交、轮询、断点恢复、下载和结果管理**。适用于已经能通过 SSH Tunnel、Tailscale 或其他方式访问 ACE-Step HTTP API 的个人工作站。
 
@@ -45,11 +45,12 @@ flowchart LR
 | --- | --- | --- |
 | Runtime | Python 3.10+ | Windows CLI 与文件处理 |
 | HTTP | `requests` | multipart 上传、健康检查、轮询和流式下载 |
+| 本地音频 | FFmpeg | 歌单解码、统一音频参数与 WAV / FLAC 顺序拼接 |
 | 状态 | JSON manifest | 任务身份、状态、seed、重试与输出路径的本地持久化 |
 | 远端推理 | ACE-Step 1.5 API | 音频 `cover` / Remix 生成 |
 | 测试 | 标准库 `unittest` + Mock HTTP Server | 不依赖 GPU 的协议、恢复和下载回归测试 |
 
-依赖保持刻意精简：运行时只需要 `requests`。没有数据库、Web UI、Docker 容器或额外队列服务。
+依赖保持刻意精简：Python 运行时只需要 `requests`。没有数据库、Web UI、Docker 容器或额外队列服务。仅使用本地拼接时不需要 ACE-Step Server 或 Python HTTP 依赖，但需要 [FFmpeg](https://ffmpeg.org/) 在 `PATH` 中。
 
 ## 快速开始
 
@@ -102,6 +103,39 @@ text2music 可配置 `music_caption`、`audio_duration`（10–600 秒）、`ins
 也可以直接双击 [`run.bat`](run.bat)。它只负责调用本机 Python；依赖缺失时会给出安装提示，不会擅自安装依赖、启动远端服务或创建隧道。
 
 如果系统没有 Python Launcher（`py`），将上面命令中的 `py -3` 替换为已安装 Python 的 `python` 即可。
+
+### 按歌单顺序拼接本地歌曲
+
+`concat` 是完全本地的音频处理模式：不读取 `config.json`、不访问 ACE-Step，也不创建远端任务。准备一个 UTF-8 文本歌单，每行一个 `.mp3`、`.wav` 或 `.flac` 文件；空行与 `#` 开头的注释会忽略，相对路径以歌单文件所在目录解析。
+
+```text
+# playlists/night-drive.txt
+../outputs/text2music/rainy_window/track_0001.flac
+D:/Music/licensed-intro.mp3
+../input/outro.wav
+```
+
+确认 `ffmpeg -version` 能在运行命令的 PowerShell 中执行后，运行：
+
+```powershell
+py -3 batch_remix.py --mode concat --playlist "playlists/night-drive.txt" --label "night-drive"
+# outputs/concat/night-drive.wav
+```
+
+不同输入编码、采样率或声道布局会由 FFmpeg 统一处理为 48 kHz 双声道、16-bit PCM WAV。该模式不插入静音、不做淡入淡出、节拍匹配或响度归一化，因此会按清单顺序紧接着播放原始曲目内容。已有同名输出会拒绝覆盖；完成前只存在临时文件，成功且非空后才原子改名。
+
+默认格式为 WAV；如需无损压缩的 FLAC，请显式指定：
+
+```powershell
+py -3 batch_remix.py --mode concat --playlist "playlists/night-drive.txt" --label "night-drive" --output-format flac
+# outputs/concat/night-drive.flac
+```
+
+如果当前终端没有继承系统的 FFmpeg `PATH`，可直接指定可执行文件：
+
+```powershell
+py -3 batch_remix.py --mode concat --playlist "playlists/night-drive.txt" --label "night-drive" --ffmpeg-bin "C:/ffmpeg/bin/ffmpeg.exe"
+```
 
 ### 首次联调建议
 
@@ -188,6 +222,7 @@ ace-batch-remix/
 ├── run.bat                 # Windows 双击入口
 ├── src/
 │   ├── api.py              # ACE-Step HTTP 协议与 payload 映射
+│   ├── audio_concat.py     # 本地歌单解析与 FFmpeg WAV / FLAC 顺序拼接
 │   ├── config.py           # 配置读取与校验
 │   ├── manifest.py         # 本地任务状态持久化
 │   └── runner.py           # 扫描、状态机、轮询、下载与汇总
