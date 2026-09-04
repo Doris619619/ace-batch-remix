@@ -1,4 +1,4 @@
-"""Local FFmpeg-backed playlist concatenation with safe, atomic FLAC output."""
+"""Local FFmpeg-backed playlist concatenation with safe, atomic WAV or FLAC output."""
 
 from __future__ import annotations
 
@@ -10,6 +10,10 @@ import subprocess
 
 
 SUPPORTED_AUDIO_EXTENSIONS = {".flac", ".mp3", ".wav"}
+CONCAT_OUTPUT_FORMATS = {
+    "flac": {"suffix": ".flac", "codec": "flac"},
+    "wav": {"suffix": ".wav", "codec": "pcm_s16le"},
+}
 ILLEGAL_WINDOWS_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
@@ -54,12 +58,22 @@ def load_playlist(playlist_path: Path) -> list[Path]:
     return sources
 
 
-def concat_output_path(root: Path, label: str) -> Path:
-    """Allocate a Windows-safe FLAC destination under the repository's ignored outputs directory."""
+def concat_output_format(output_format: str) -> dict[str, str]:
+    """Validate a requested local output format and return its FFmpeg codec and filename suffix."""
+    normalized = output_format.lower()
+    try:
+        return CONCAT_OUTPUT_FORMATS[normalized]
+    except KeyError as exc:
+        allowed = ", ".join(sorted(CONCAT_OUTPUT_FORMATS))
+        raise AudioConcatError(f"--output-format must be one of: {allowed}") from exc
+
+
+def concat_output_path(root: Path, label: str, output_format: str = "wav") -> Path:
+    """Allocate a Windows-safe destination for the selected local output format."""
     normalized = ILLEGAL_WINDOWS_NAME.sub("_", label).strip(". ")
     if not normalized:
         raise AudioConcatError("--label must contain at least one valid filename character.")
-    return root / "outputs" / "concat" / f"{normalized}.flac"
+    return root / "outputs" / "concat" / f"{normalized}{concat_output_format(output_format)['suffix']}"
 
 
 def resolve_ffmpeg(ffmpeg_bin: str) -> str:
@@ -75,8 +89,9 @@ def resolve_ffmpeg(ffmpeg_bin: str) -> str:
     )
 
 
-def build_concat_command(ffmpeg_bin: str, sources: list[Path], part_path: Path) -> list[str]:
+def build_concat_command(ffmpeg_bin: str, sources: list[Path], part_path: Path, output_format: str = "wav") -> list[str]:
     """Build an FFmpeg concat-filter command that normalizes formats without changing loudness."""
+    format_details = concat_output_format(output_format)
     inputs = [item for source in sources for item in ("-i", str(source))]
     per_source = [
         f"[{index}:a]aformat=sample_rates=48000:sample_fmts=s16:channel_layouts=stereo[a{index}]"
@@ -95,7 +110,7 @@ def build_concat_command(ffmpeg_bin: str, sources: list[Path], part_path: Path) 
         "-map",
         "[outa]",
         "-c:a",
-        "flac",
+        format_details["codec"],
         str(part_path),
     ]
 
@@ -103,19 +118,21 @@ def build_concat_command(ffmpeg_bin: str, sources: list[Path], part_path: Path) 
 class AudioConcatRunner:
     """Concatenate a local playlist without contacting ACE-Step or loading generation configuration."""
 
-    def __init__(self, root: Path, *, playlist: str, label: str, ffmpeg_bin: str = "ffmpeg") -> None:
+    def __init__(self, root: Path, *, playlist: str, label: str, ffmpeg_bin: str = "ffmpeg",
+                 output_format: str = "wav") -> None:
         """Keep explicit CLI inputs for a single non-resumable local concatenation run."""
         self.root = root
         playlist_path = Path(playlist)
         self.playlist = (playlist_path if playlist_path.is_absolute() else root / playlist_path).resolve()
         self.label = label
         self.ffmpeg_bin = ffmpeg_bin
+        self.output_format = output_format
 
     def run(self) -> int:
-        """Validate inputs, write a temporary FLAC through FFmpeg, and atomically publish the completed mix."""
+        """Validate inputs, write a temporary WAV or FLAC through FFmpeg, and atomically publish the completed mix."""
         try:
             sources = load_playlist(self.playlist)
-            output_path = concat_output_path(self.root, self.label)
+            output_path = concat_output_path(self.root, self.label, self.output_format)
             if output_path.exists():
                 raise AudioConcatError(f"Output already exists and will not be overwritten: {output_path}")
             executable = resolve_ffmpeg(self.ffmpeg_bin)
@@ -123,7 +140,7 @@ class AudioConcatRunner:
             part_path = output_path.with_name(f".{output_path.stem}.part{output_path.suffix}")
             part_path.unlink(missing_ok=True)
             completed = subprocess.run(
-                build_concat_command(executable, sources, part_path),
+                build_concat_command(executable, sources, part_path, self.output_format),
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -134,7 +151,9 @@ class AudioConcatRunner:
                 detail = completed.stderr.strip()[-1200:] or "FFmpeg did not provide an error message."
                 raise AudioConcatError(f"FFmpeg failed while concatenating audio:\n{detail}")
             if not part_path.is_file() or part_path.stat().st_size == 0:
-                raise AudioConcatError("FFmpeg reported success but did not create a non-empty FLAC output.")
+                raise AudioConcatError(
+                    f"FFmpeg reported success but did not create a non-empty {self.output_format.upper()} output."
+                )
             part_path.rename(output_path)
         except (AudioConcatError, OSError) as exc:
             try:

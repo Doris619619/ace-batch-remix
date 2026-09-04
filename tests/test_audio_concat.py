@@ -30,14 +30,18 @@ class AudioConcatTests(unittest.TestCase):
 
     def test_cli_requires_concat_playlist_and_label_and_rejects_generation_flags(self) -> None:
         """Expose concat's dedicated arguments without allowing unrelated ACE-Step controls."""
-        with patch.object(sys, "argv", ["batch_remix.py", "--mode", "concat", "--playlist", "mix.txt", "--label", "mix", "--ffmpeg-bin", "C:/ffmpeg/ffmpeg.exe"]):
+        with patch.object(sys, "argv", ["batch_remix.py", "--mode", "concat", "--playlist", "mix.txt", "--label", "mix", "--ffmpeg-bin", "C:/ffmpeg/ffmpeg.exe", "--output-format", "flac"]):
             args = parse_args()
         self.assertEqual(args.playlist, "mix.txt")
         self.assertEqual(args.ffmpeg_bin, "C:/ffmpeg/ffmpeg.exe")
+        self.assertEqual(args.output_format, "flac")
         with patch.object(sys, "argv", ["batch_remix.py", "--mode", "concat", "--playlist", "mix.txt"]):
             with self.assertRaises(SystemExit):
                 parse_args()
         with patch.object(sys, "argv", ["batch_remix.py", "--mode", "concat", "--playlist", "mix.txt", "--label", "mix", "--count", "2"]):
+            with self.assertRaises(SystemExit):
+                parse_args()
+        with patch.object(sys, "argv", ["batch_remix.py", "--mode", "remix", "--output-format", "wav"]):
             with self.assertRaises(SystemExit):
                 parse_args()
 
@@ -74,16 +78,18 @@ class AudioConcatTests(unittest.TestCase):
         """Build a concat-filter command that preserves order and avoids gain or loudness processing."""
         first = Path("C:/audio/first.mp3")
         second = Path("C:/audio/second.wav")
-        command = build_concat_command("ffmpeg.exe", [first, second], Path("C:/output/.mix.part.flac"))
+        command = build_concat_command("ffmpeg.exe", [first, second], Path("C:/output/.mix.part.wav"))
         graph = command[command.index("-filter_complex") + 1]
         self.assertEqual([command[index + 1] for index, value in enumerate(command) if value == "-i"], [str(first), str(second)])
         self.assertIn("concat=n=2:v=0:a=1[outa]", graph)
         self.assertIn("sample_rates=48000", graph)
         self.assertNotIn("loudnorm", graph)
         self.assertNotIn("afade", graph)
+        self.assertEqual(command[command.index("-c:a") + 1], "pcm_s16le")
+        self.assertTrue(command[-1].endswith(".wav"))
 
     def test_runner_publishes_nonempty_part_atomically_and_never_overwrites(self) -> None:
-        """Publish only a successful temporary FLAC and reject a subsequent same-label run."""
+        """Publish only a successful temporary WAV and reject a subsequent same-label run."""
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             source = self._audio(root, "song.flac")
@@ -92,14 +98,15 @@ class AudioConcatTests(unittest.TestCase):
 
             def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
                 """Simulate FFmpeg by writing the command's final temporary output path."""
-                Path(command[-1]).write_bytes(b"FLAC")
+                Path(command[-1]).write_bytes(b"WAV")
                 return subprocess.CompletedProcess(command, 0, "", "")
 
             with patch("src.audio_concat.resolve_ffmpeg", return_value="ffmpeg.exe"), patch("src.audio_concat.subprocess.run", side_effect=fake_run):
                 self.assertEqual(AudioConcatRunner(root, playlist="mix.txt", label="my mix").run(), 0)
             output = concat_output_path(root, "my mix")
-            self.assertEqual(output.read_bytes(), b"FLAC")
-            self.assertFalse((output.parent / ".my mix.part.flac").exists())
+            self.assertEqual(output.read_bytes(), b"WAV")
+            self.assertEqual(output.suffix, ".wav")
+            self.assertFalse((output.parent / ".my mix.part.wav").exists())
             self.assertEqual(AudioConcatRunner(root, playlist="mix.txt", label="my mix").run(), 2)
 
     def test_runner_cleans_failed_temporary_output_and_reports_missing_ffmpeg(self) -> None:
@@ -117,6 +124,12 @@ class AudioConcatTests(unittest.TestCase):
 
             with patch("src.audio_concat.resolve_ffmpeg", return_value="ffmpeg.exe"), patch("src.audio_concat.subprocess.run", side_effect=failing_run):
                 self.assertEqual(AudioConcatRunner(root, playlist="mix.txt", label="failed").run(), 2)
-            self.assertFalse((root / "outputs" / "concat" / ".failed.part.flac").exists())
+            self.assertFalse((root / "outputs" / "concat" / ".failed.part.wav").exists())
             with patch("src.audio_concat.shutil.which", return_value=None):
                 self.assertEqual(AudioConcatRunner(root, playlist="mix.txt", label="no-engine", ffmpeg_bin="missing-ffmpeg").run(), 2)
+
+    def test_explicit_flac_keeps_the_existing_lossless_compressed_output(self) -> None:
+        """Allow callers to override WAV's default with the prior FLAC encoding and extension."""
+        command = build_concat_command("ffmpeg.exe", [Path("C:/audio/song.wav")], Path("C:/output/.mix.part.flac"), "flac")
+        self.assertEqual(command[command.index("-c:a") + 1], "flac")
+        self.assertEqual(concat_output_path(Path("C:/output"), "mix", "flac").suffix, ".flac")

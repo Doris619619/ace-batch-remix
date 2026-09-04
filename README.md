@@ -2,7 +2,7 @@
 
 # ACE Batch Remix
 
-> 面向 [ACE-Step 1.5](https://github.com/ace-step/ACE-Step-1.5) 的可靠 Windows 批量客户端：既可为本地音频生成 Remix，也可无参考音频地批量 text2music，还能将本地歌单顺序合成为一首 FLAC。
+> 面向 [ACE-Step 1.5](https://github.com/ace-step/ACE-Step-1.5) 的可靠 Windows 批量客户端：既可为本地音频生成 Remix，也可无参考音频地批量 text2music，还能将本地歌单顺序合成为一首 WAV 或 FLAC。
 
 ACE Batch Remix 不训练模型，也不修改 ACE-Step 源码。它解决的是批量实验中最容易出错的那层工作：**提交、轮询、断点恢复、下载和结果管理**。适用于已经能通过 SSH Tunnel、Tailscale 或其他方式访问 ACE-Step HTTP API 的个人工作站。
 
@@ -45,7 +45,7 @@ flowchart LR
 | --- | --- | --- |
 | Runtime | Python 3.10+ | Windows CLI 与文件处理 |
 | HTTP | `requests` | multipart 上传、健康检查、轮询和流式下载 |
-| 本地音频 | FFmpeg | 歌单解码、统一音频参数与 FLAC 顺序拼接 |
+| 本地音频 | FFmpeg | 歌单解码、统一音频参数与 WAV / FLAC 顺序拼接 |
 | 状态 | JSON manifest | 任务身份、状态、seed、重试与输出路径的本地持久化 |
 | 远端推理 | ACE-Step 1.5 API | 音频 `cover` / Remix 生成 |
 | 测试 | 标准库 `unittest` + Mock HTTP Server | 不依赖 GPU 的协议、恢复和下载回归测试 |
@@ -119,10 +119,17 @@ D:/Music/licensed-intro.mp3
 
 ```powershell
 py -3 batch_remix.py --mode concat --playlist "playlists/night-drive.txt" --label "night-drive"
-# outputs/concat/night-drive.flac
+# outputs/concat/night-drive.wav
 ```
 
-不同输入编码、采样率或声道布局会由 FFmpeg 统一处理为 48 kHz 双声道 FLAC。该模式不插入静音、不做淡入淡出、节拍匹配或响度归一化，因此会按清单顺序紧接着播放原始曲目内容。已有同名输出会拒绝覆盖；完成前只存在临时文件，成功且非空后才原子改名。
+不同输入编码、采样率或声道布局会由 FFmpeg 统一处理为 48 kHz 双声道、16-bit PCM WAV。该模式不插入静音、不做淡入淡出、节拍匹配或响度归一化，因此会按清单顺序紧接着播放原始曲目内容。已有同名输出会拒绝覆盖；完成前只存在临时文件，成功且非空后才原子改名。
+
+默认格式为 WAV；如需无损压缩的 FLAC，请显式指定：
+
+```powershell
+py -3 batch_remix.py --mode concat --playlist "playlists/night-drive.txt" --label "night-drive" --output-format flac
+# outputs/concat/night-drive.flac
+```
 
 如果当前终端没有继承系统的 FFmpeg `PATH`，可直接指定可执行文件：
 
@@ -215,7 +222,7 @@ ace-batch-remix/
 ├── run.bat                 # Windows 双击入口
 ├── src/
 │   ├── api.py              # ACE-Step HTTP 协议与 payload 映射
-│   ├── audio_concat.py     # 本地歌单解析与 FFmpeg FLAC 顺序拼接
+│   ├── audio_concat.py     # 本地歌单解析与 FFmpeg WAV / FLAC 顺序拼接
 │   ├── config.py           # 配置读取与校验
 │   ├── manifest.py         # 本地任务状态持久化
 │   └── runner.py           # 扫描、状态机、轮询、下载与汇总

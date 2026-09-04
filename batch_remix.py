@@ -16,6 +16,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--label", help="Output label for text2music or required filename label for concat.")
     parser.add_argument("--playlist", help="UTF-8 playlist with one local audio path per line; required for --mode concat.")
     parser.add_argument("--ffmpeg-bin", help="FFmpeg command or full executable path; only valid for --mode concat.")
+    parser.add_argument("--output-format", choices=("flac", "wav"), help="Local concat output format; default: wav.")
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--limit", type=int, help="Process only the first N sorted input files.")
     selection.add_argument("--file", dest="selected_file", help="Process exactly one audio file under input/.")
@@ -26,8 +27,8 @@ def parse_args() -> argparse.Namespace:
             parser.error("--mode concat requires both --playlist and --label")
         if any(value is not None for value in (args.count, args.limit, args.selected_file, args.caption_override)):
             parser.error("--count, --limit, --file, and --caption are not valid for --mode concat")
-    elif args.playlist or args.ffmpeg_bin:
-        parser.error("--playlist and --ffmpeg-bin are only valid for --mode concat")
+    elif args.playlist or args.ffmpeg_bin or args.output_format:
+        parser.error("--playlist, --ffmpeg-bin, and --output-format are only valid for --mode concat")
     return args
 
 
@@ -41,6 +42,7 @@ def main() -> int:
             playlist=args.playlist,
             label=args.label,
             ffmpeg_bin=args.ffmpeg_bin or "ffmpeg",
+            output_format=args.output_format or "wav",
         ).run()
     # Keep the local concat workflow usable even when requests is not installed.
     from src.runner import BatchRemixRunner
